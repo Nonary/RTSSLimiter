@@ -1,0 +1,16 @@
+{
+    "debug": false,
+    "gracePeriod": 180,
+    "startDelay": 1,
+    "installationOrderPreferences": {
+        "enabled": true,
+        // Set the order which the scripts are installed in, if the scripts are currently out of order, they will be reinstalled in the order specified here.
+        "scriptNames": [
+            "MonitorSwapper",
+            "ResolutionMatcher",
+            "AutoHDR",
+            "RTSSLimiter",
+            "PlayNiteWatcher"
+        ]
+    }
+}
