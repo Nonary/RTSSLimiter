@@ -19,14 +19,14 @@ if (-not $script:arguments) {
 
 # Function to execute at the start of a stream
 function OnStreamStart() {
-    $script:arguments["OldLimit"] = Apply-Limit -configFilePath $settings.RTSSConfigPath -newLimit $env:SUNSHINE_CLIENT_FPS
+    $script:arguments["OldLimit"] = Set-Limit -configFilePath $settings.RTSSConfigPath -newLimit $env:SUNSHINE_CLIENT_FPS
 }
 
 
 # Function to execute at the end of a stream. This function is called in a background job,
 # and hence doesn't have direct access to the script scope. $kwargs is passed explicitly to emulate script:arguments.
 function OnStreamEnd($kwargs) {
-    Apply-Limit -configFilePath $settings.RTSSConfigPath -newLimit $kwargs["OldLimit"]
+    Set-Limit -configFilePath $settings.RTSSConfigPath -newLimit $kwargs["OldLimit"]
     return $true
 }
 
@@ -47,7 +47,7 @@ function Set-Limit {
         if ($configContent -match 'Limit=(\d+)') {
             $oldLimit = [int]$Matches[1]
         } else {
-            Write-Output "No existing frame limit found in the config file, assuming it is unlimited."
+            Write-Host "No existing frame limit found in the config file, assuming it is unlimited."
             return 0
         }
 
@@ -57,10 +57,10 @@ function Set-Limit {
         # Write the updated content back to the file
         Set-Content $configFilePath -Value $configContent
 
-        Write-Output "Frame rate limit updated to $newLimit in $configFilePath."
+        Write-Host "Frame rate limit updated to $newLimit in $configFilePath."
         return $oldLimit
     } else {
-        Write-Output "Global file not found at $configFilePath, please correct the path in settings.json."
+        Write-Host "Global file not found at $configFilePath, please correct the path in settings.json."
         return $null
     }
 }
