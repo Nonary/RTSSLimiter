@@ -212,7 +212,7 @@ function Add-Command {
 
     $command = [PSCustomObject]@{
         do       = "powershell.exe -executionpolicy bypass -file `"$($scriptPath)`" -n $scriptName"
-        elevated = "false"
+        elevated = "true"
         undo     = "powershell.exe -executionpolicy bypass -file `"$($scriptRoot)\Helpers.ps1`" -n $scriptName -t 1"
     }
 

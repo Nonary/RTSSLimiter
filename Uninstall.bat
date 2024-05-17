@@ -1,1 +1,1 @@
-powershell.exe -executionpolicy bypass -file ./Installer.ps1 -n SunshineScriptInstaller -i 0
+powershell.exe -executionpolicy bypass -file ./Installer.ps1 -n RTSSLimiter -i 0

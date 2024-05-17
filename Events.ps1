@@ -19,19 +19,48 @@ if (-not $script:arguments) {
 
 # Function to execute at the start of a stream
 function OnStreamStart() {
-    Write-Host "Stream started!"
-    Write-Debug "Optional Debug Message"
-    # Add a new key-value pair to the dictionary, demonstrating parameter storage for future retrieval
-    $script:arguments.Add("Message", "This is an example of retrieving parameters in the future")
+    $script:arguments["OldLimit"] = Apply-Limit -configFilePath $settings.RTSSConfigPath -newLimit $env:SUNSHINE_CLIENT_FPS
 }
+
 
 # Function to execute at the end of a stream. This function is called in a background job,
 # and hence doesn't have direct access to the script scope. $kwargs is passed explicitly to emulate script:arguments.
 function OnStreamEnd($kwargs) {
-    Write-Host "Ending Stream!"
-    # Access the script variable defined earlier via OnStreamStart()
-    Write-Host $kwargs["Message"]
-    Write-Debug "Optional Debug Message"
-    # Always return a boolean here, that way the job knows it has been completed or not.
+    Apply-Limit -configFilePath $settings.RTSSConfigPath -newLimit $kwargs["OldLimit"]
     return $true
+}
+
+
+function Set-Limit {
+    param (
+        [string]$configFilePath,
+        [int]$newLimit
+    )
+
+    # Check if the file exists
+    if (Test-Path $configFilePath) {
+        # Read the entire content of the file
+        $configContent = Get-Content $configFilePath -Raw
+
+        # Capture the old limit first, before replacing
+        $oldLimit = 0
+        if ($configContent -match 'Limit=(\d+)') {
+            $oldLimit = [int]$Matches[1]
+        } else {
+            Write-Output "No existing frame limit found in the config file, assuming it is unlimited."
+            return 0
+        }
+
+        # Find and replace the line that sets the frame rate limit
+        $configContent = $configContent -replace 'Limit=\d+', "Limit=$newLimit"
+
+        # Write the updated content back to the file
+        Set-Content $configFilePath -Value $configContent
+
+        Write-Output "Frame rate limit updated to $newLimit in $configFilePath."
+        return $oldLimit
+    } else {
+        Write-Output "Global file not found at $configFilePath, please correct the path in settings.json."
+        return $null
+    }
 }
