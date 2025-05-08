@@ -5,7 +5,7 @@ This simple script applies an RTSS frame limit to your stream. It is recommended
 ## Installation Instructions
 
 1. **Update Path (if necessary)**:
-    - If you have installed RTSS in a different location other than the default, you will need to update the path to the global config file located in `settings.json`.
+    - If you have installed RTSS in a different location other than the default, you will need to update the path installation directory located in `settings.json`.
     - If RTSS is installed in the default location, you can leave the path unchanged.
 
 2. **Run the Installer**:

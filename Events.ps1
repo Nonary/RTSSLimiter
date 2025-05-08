@@ -6,61 +6,81 @@ param(
 )
 $path = (Split-Path $MyInvocation.MyCommand.Path -Parent)
 Set-Location $path
-. .\Helpers.ps1 -n $scriptName
 
 # Load settings from a JSON file located in the same directory as the script
 $settings = Get-Settings
 
-# Initialize a script scoped dictionary to store variables.
+# Load your helper functions
+. .\Helpers.ps1 -n $scriptName
+
+# Initialize a script-scoped dictionary to store variables.
 # This dictionary is used to pass parameters to functions that might not have direct access to script scope, like background jobs.
 if (-not $script:arguments) {
     $script:arguments = @{}
 }
 
-# Function to execute at the start of a stream
-function OnStreamStart() {
-    $script:arguments["OldLimit"] = Set-Limit -configFilePath $settings.RTSSConfigPath -newLimit $env:SUNSHINE_CLIENT_FPS
-}
 
+# Function to execute at the start of a stream
+function OnStreamStart {
+    . .\RTSSType.ps1 -rtssInstallPath $settings.RTSSInstallPath
+
+    $frameLimitRaw = $env:SUNSHINE_CLIENT_FPS
+
+    $frameLimit = $frameLimitRaw -as [int]
+
+    if($frameLimit -ge 1000){
+        $frameLimit = $frameLimit / 1000
+    }
+    
+    $script:arguments["OldLimit"] = Set-Limit -newLimit $frameLimit
+    $script:arguments["RTSSInstallPath"] = $settings.RTSSInstallPath
+}
 
 # Function to execute at the end of a stream. This function is called in a background job,
 # and hence doesn't have direct access to the script scope. $kwargs is passed explicitly to emulate script:arguments.
-function OnStreamEnd($kwargs) {
-    Set-Limit -configFilePath $settings.RTSSConfigPath -newLimit $kwargs["OldLimit"]
+function OnStreamEnd {
+    param($kwargs)
+    . .\RTSSType.ps1 -rtssInstallPath $kwargs["RTSSInstallPath"]
+    Set-Limit -configFilePath -newLimit $kwargs["OldLimit"]
     return $true
 }
 
-
 function Set-Limit {
     param (
-        [string]$configFilePath,
         [int]$newLimit
     )
 
-    # Check if the file exists
-    if (Test-Path $configFilePath) {
-        # Read the entire content of the file
-        $configContent = Get-Content $configFilePath -Raw
+    $profileName = ""  # empty = global profile
 
-        # Capture the old limit first, before replacing
-        $oldLimit = 0
-        if ($configContent -match 'Limit=(\d+)') {
-            $oldLimit = [int]$Matches[1]
+    # Allocate unmanaged memory for a 32-bit integer
+    $ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal(4)
+
+    try {
+        # Load the target profile (global or per-game)
+        [RTSS]::LoadProfile($profileName)
+
+        # Read the existing limit
+        $gotOld = [RTSS]::GetProfileProperty("FramerateLimit", $ptr, 4)
+        $oldLimit = if ($gotOld) {
+            [System.Runtime.InteropServices.Marshal]::ReadInt32($ptr)
         } else {
-            Write-Host "No existing frame limit found in the config file, assuming it is unlimited."
-            return 0
+            Write-Host "Warning: could not read existing frame limit; assuming 0."
+            0
         }
 
-        # Find and replace the line that sets the frame rate limit
-        $configContent = $configContent -replace 'Limit=\d+', "Limit=$newLimit"
+        # Write the new limit value into the same buffer
+        [System.Runtime.InteropServices.Marshal]::WriteInt32($ptr, $newLimit)
+        [RTSS]::SetProfileProperty("FramerateLimit", $ptr, 4) | Out-Null
 
-        # Write the updated content back to the file
-        Set-Content $configFilePath -Value $configContent
+        # Persist the change and notify running games
+        [RTSS]::SaveProfile($profileName)
+        [RTSS]::UpdateProfiles()
 
-        Write-Host "Frame rate limit updated to $newLimit in $configFilePath."
+        Write-Host "RTSS frame rate limit set to $newLimit fps (old limit was $oldLimit fps)."
         return $oldLimit
-    } else {
-        Write-Host "Global file not found at $configFilePath, please correct the path in settings.json."
-        return $null
+    }
+    finally {
+        # Always free the unmanaged memory
+        [System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
     }
 }
