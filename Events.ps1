@@ -7,8 +7,6 @@ param(
 $path = (Split-Path $MyInvocation.MyCommand.Path -Parent)
 Set-Location $path
 
-
-
 # Load your helper functions
 . .\Helpers.ps1 -n $scriptName
 
@@ -24,111 +22,132 @@ if (-not $script:arguments) {
 
 # Function to execute at the start of a stream
 function OnStreamStart {
+    # Load RTSS type helpers
     . .\RTSSType.ps1 -rtssInstallPath $settings.RTSSInstallPath
 
-    $frameLimitRaw = $env:SUNSHINE_CLIENT_FPS
+    # ---------------------------------------------------------------------
+    # 1. Grab FPS from env‑vars and normalise decimal separator
+    # ---------------------------------------------------------------------
+    $fpsRaw = $env:APOLLO_CLIENT_FPS
+    if (-not $fpsRaw) { $fpsRaw = $env:SUNSHINE_CLIENT_FPS }
+    if (-not $fpsRaw) { throw "No FPS environment variable set." }
 
-    $frameLimit = $frameLimitRaw -as [int]
-
-    
-    if($frameLimit -ge 1000){
-        $script:arguments["OldLimitDenominator"] = Set-LimitDenominator -configFilePath $settings.RTSSConfigFilePath -newDenominator 100
+    $normalizedFpsRaw = $fpsRaw -replace ',', '.'
+    if (-not ($normalizedFpsRaw -match '^[0-9]+(\.[0-9]+)?$')) {
+        throw "Invalid FPS value: $fpsRaw"
     }
-    
-    $script:arguments["OldLimit"] = Set-Limit -newLimit $frameLimit
-    
-    $script:arguments["RTSSInstallPath"] = $settings.RTSSInstallPath
+    $fps = [double]$normalizedFpsRaw
+
+    # ---------------------------------------------------------------------
+    # 2. Compute denominator & integer numerator expected by RTSS
+    # ---------------------------------------------------------------------
+    $currentDenominator = 1
+    if ($normalizedFpsRaw -like '*.*') {
+        $fractionPart      = ($normalizedFpsRaw -split '\.')[1]
+        $currentDenominator = [math]::Pow(10, $fractionPart.Length)
+    }
+    $scaledLimit = [math]::Round($fps * $currentDenominator)
+
+    # ---------------------------------------------------------------------
+    # 3. Switch denominator on disk (if needed) and remember the original
+    # ---------------------------------------------------------------------
+    $originalDenominator = if ($currentDenominator -gt 1) {
+        Set-LimitDenominator -newDenominator $currentDenominator
+    } else { 1 }
+
+    # ---------------------------------------------------------------------
+    # 4. Push new framerate limit via RTSS API, recording the previous value
+    # ---------------------------------------------------------------------
+    $originalLimit = Set-Limit `
+        -newLimit           $scaledLimit `
+        -currentDenominator $currentDenominator `
+        -oldDenominator     $originalDenominator
+
+    # ---------------------------------------------------------------------
+    # 5. Stash state for OnStreamEnd
+    # ---------------------------------------------------------------------
+    $script:arguments["OriginalLimit"]      = $originalLimit
+    $script:arguments["OriginalDenominator"] = $originalDenominator
+    $script:arguments["CurrentDenominator"]  = $currentDenominator
+    $script:arguments["RTSSInstallPath"]     = $settings.RTSSInstallPath
 }
 
-# Function to execute at the end of a stream. This function is called in a background job,
-# and hence doesn't have direct access to the script scope. $kwargs is passed explicitly to emulate script:arguments.
+
 function OnStreamEnd {
     param($kwargs)
     . .\RTSSType.ps1 -rtssInstallPath $kwargs["RTSSInstallPath"]
-    if($null -ne $kwargs["OldLimitDenominator"]) {
-        Set-LimitDenominator -configFilePath $settings.RTSSConfigFilePath -newDenominator $kwargs["OldLimitDenominator"]
+
+    # 1. Restore the original denominator in the config file
+    if ($null -ne $kwargs["OriginalDenominator"]) {
+        Set-LimitDenominator -newDenominator $kwargs["OriginalDenominator"] | Out-Null
     }
-    Set-Limit -configFilePath -newLimit $kwargs["OldLimit"]
+
+    # 2. Restore the original frame‑limit (console message reflects both bases)
+    Set-Limit `
+        -newLimit           $kwargs["OriginalLimit"] `
+        -currentDenominator $kwargs["OriginalDenominator"] `
+        -oldDenominator     $kwargs["CurrentDenominator"] | Out-Null
+
     return $true
 }
 
+
 function Set-Limit {
-    param (
-        [int]$newLimit
+    param(
+        [Parameter(Mandatory)][int]$newLimit,
+        [int]$currentDenominator = 1,
+        [int]$oldDenominator     = $currentDenominator  # optional override
     )
 
-    $profileName = ""  # empty = global profile
-
-    # Allocate unmanaged memory for a 32-bit integer
-    $ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal(4)
+    $profileName = ""  # empty → global profile
+    $ptr         = [System.Runtime.InteropServices.Marshal]::AllocHGlobal(4)
 
     try {
-        # Load the target profile (global or per-game)
         [RTSS]::LoadProfile($profileName)
 
-        # Read the existing limit
-        $gotOld = [RTSS]::GetProfileProperty("FramerateLimit", $ptr, 4)
+        # Fetch previous raw value
+        $gotOld   = [RTSS]::GetProfileProperty("FramerateLimit", $ptr, 4)
         $oldLimit = if ($gotOld) {
             [System.Runtime.InteropServices.Marshal]::ReadInt32($ptr)
-        } else {
-            Write-Host "Warning: could not read existing frame limit; assuming 0."
-            0
-        }
+        } else { 0 }
 
-        # Write the new limit value into the same buffer
+        # Write the new raw value
         [System.Runtime.InteropServices.Marshal]::WriteInt32($ptr, $newLimit)
         [RTSS]::SetProfileProperty("FramerateLimit", $ptr, 4) | Out-Null
 
-        # Persist the change and notify running games
         [RTSS]::SaveProfile($profileName)
         [RTSS]::UpdateProfiles()
 
-        $formattedLimit = if ($newLimit -ge 1000) { $newLimit / 100 } else { $newLimit }
-        $formattedOldLimit = if ($oldLimit -ge 1000) { $oldLimit / 100 } else { $oldLimit }
+        # -------------------------------------------------------------
+        # Console output (culture‑independent)
+        # -------------------------------------------------------------
+        $ci = [CultureInfo]::InvariantCulture
+        $fmtNew = if ($currentDenominator -gt 1) { ($newLimit / $currentDenominator).ToString($ci) } else { $newLimit }
+        $fmtOld = if ($oldDenominator     -gt 1) { ($oldLimit / $oldDenominator).ToString($ci) } else { $oldLimit }
 
-        Write-Host "RTSS frame rate limit set to $formattedLimit fps (old limit was $formattedOldLimit fps)."
-        return $oldLimit
+        Write-Host "RTSS frame rate limit set to $fmtNew fps (old limit was $fmtOld fps)."
+        return $oldLimit  # raw value so the caller can decide how to format later
     }
     finally {
-        # Always free the unmanaged memory
         [System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
     }
 }
 
 function Set-LimitDenominator {
-    param (
-        [int]$newDenominator
-    )
+    param([Parameter(Mandatory)][int]$newDenominator)
 
-    $settings = Get-Settings
     $configFilePath = Join-Path $settings.RTSSInstallPath "Profiles/Global"
-
-
-    # Check if the file exists
-    if (Test-Path $configFilePath) {
-        # Read the entire content of the file
-        $configContent = Get-Content $configFilePath -Raw
-
-        # Capture the old denominator first, before replacing
-        $oldDenominator = 0
-        if ($configContent -match 'LimitDenominator=(\d+)') {
-            $oldDenominator = [int]$Matches[1]
-        } else {
-            Write-Host "No existing LimitDenominator found in the config file."
-            return 0
-        }
-
-        # Find and replace the line that sets the denominator
-        $configContent = $configContent -replace 'LimitDenominator=\d+', "LimitDenominator=$newDenominator"
-
-        # Write the updated content back to the file
-        Set-Content $configFilePath -Value $configContent
-
-        Write-Host "Frame rate denominator updated from $oldDenominator to $newDenominator."
-        return $oldDenominator
-    } else {
-        Write-Host "Global file not found at $configFilePath, please correct the path in settings.json."
+    if (-not (Test-Path $configFilePath)) {
+        Write-Host "Global profile not found at $configFilePath - check settings.json."
         return $null
     }
-}
 
+    $content        = Get-Content $configFilePath -Raw
+    $oldDenominator = if ($content -match 'LimitDenominator=(\d+)') { [int]$Matches[1] } else { 1 }
+
+    $content = $content -replace 'LimitDenominator=\d+', "LimitDenominator=$newDenominator"
+    Set-Content $configFilePath -Value $content
+
+    Write-Host "Frame rate denominator updated from $oldDenominator to $newDenominator."
+    return $oldDenominator
+}
