@@ -3,6 +3,7 @@
     "gracePeriod": 900,
     "startDelay": 1,
     "RTSSInstallPath": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+    "frame_limit_type": "async", // Options: async, front edge sync, back edge sync, NVIDIA Reflex 
     "installationOrderPreferences": {
         "enabled": true,
         // Set the order which the scripts are installed in, if the scripts are currently out of order, they will be reinstalled in the order specified here.

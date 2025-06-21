@@ -64,6 +64,13 @@ function OnStreamStart {
         -oldDenominator     $originalDenominator
 
     # ---------------------------------------------------------------------
+    # 0. Set SyncLimiter property from settings
+    # ---------------------------------------------------------------------
+    $syncLimiterValue = Get-SyncLimiterValue -type $settings.frame_limit_type
+    $originalSyncLimiter = Set-SyncLimiter -value $syncLimiterValue
+    $script:arguments["OriginalSyncLimiter"] = $originalSyncLimiter
+
+    # ---------------------------------------------------------------------
     # 5. Stash state for OnStreamEnd
     # ---------------------------------------------------------------------
     $script:arguments["OriginalLimit"]      = $originalLimit
@@ -76,6 +83,11 @@ function OnStreamStart {
 function OnStreamEnd {
     param($kwargs)
     . .\RTSSType.ps1 -rtssInstallPath $kwargs["RTSSInstallPath"]
+
+    # Restore SyncLimiter
+    if ($null -ne $kwargs["OriginalSyncLimiter"]) {
+        Set-SyncLimiter -value $kwargs["OriginalSyncLimiter"] | Out-Null
+    }
 
     # 1. Restore the original denominator in the config file
     if ($null -ne $kwargs["OriginalDenominator"]) {
@@ -150,4 +162,43 @@ function Set-LimitDenominator {
 
     Write-Host "Frame rate denominator updated from $oldDenominator to $newDenominator."
     return $oldDenominator
+}
+
+# Function to map frame_limit_type to SyncLimiter value
+function Get-SyncLimiterValue {
+    param([string]$type)
+    switch ($type.ToLower()) {
+        'async'             { return 0 }
+        'front edge sync'   { return 1 }
+        'back edge sync'    { return 2 }
+        'nvidia reflex'     { return 3 }
+        default             { throw "Unknown frame_limit_type: $type" }
+    }
+}
+
+# Function to set SyncLimiter property via RTSS hooks
+function Set-SyncLimiter {
+    param(
+        [Parameter(Mandatory)][int]$value
+    )
+    $profileName = ""  # global profile
+    $ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal(4)
+    try {
+        [RTSS]::LoadProfile($profileName)
+        # Fetch previous value
+        $gotOld = [RTSS]::GetProfileProperty("SyncLimiter", $ptr, 4)
+        $oldValue = if ($gotOld) {
+            [System.Runtime.InteropServices.Marshal]::ReadInt32($ptr)
+        } else { 0 }
+        # Write new value
+        [System.Runtime.InteropServices.Marshal]::WriteInt32($ptr, $value)
+        [RTSS]::SetProfileProperty("SyncLimiter", $ptr, 4) | Out-Null
+        [RTSS]::SaveProfile($profileName)
+        [RTSS]::UpdateProfiles()
+        Write-Host "RTSS SyncLimiter set to $value (old value was $oldValue)."
+        return $oldValue
+    }
+    finally {
+        [System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
+    }
 }
